@@ -742,8 +742,8 @@
            ondragover="dzOver(event)" ondragleave="dzLeave(event)" ondrop="dzDrop(event)">
         <div class="dz-ico">⬆️</div>
         <div class="dz-main">Drop your CSV here, or <span class="lnk">browse files</span></div>
-        <div class="dz-sub">Supported: .csv &nbsp;·&nbsp; Max 500 MB &nbsp;·&nbsp; Columns: email, phone, idfa, gaid</div>
-        <input type="file" id="fi" accept=".csv" style="display:none" onchange="pickFile(event)">
+        <div class="dz-sub">Supported: .csv &nbsp;·&nbsp; Max 500 MB &nbsp;·&nbsp; Columns: email, phone, idfa, match ID</div>
+        <input type="file" id="fi" accept=".csv,.xlsx" style="display:none" onchange="pickFile(event)">
       </div>
       <div class="f-chip" id="fchip">
         <span class="f-chip-ico">📄</span>
@@ -767,6 +767,7 @@
             <input type="text" class="fi" id="shTab" placeholder="Sheet1" oninput="updPrev()">
           </div>
         </div>
+
 
         <!-- SCHEDULER TOGGLE -->
         <div class="tog-row">
@@ -986,16 +987,28 @@
 </div><!-- /page -->
 
 <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
-  let srcMode = 'csv', hasFile = false, apiOpen = false;
+  let srcMode = 'csv', hasFile = false, apiOpen = false, droppedFile = null;
 
   // ── SOURCE SWITCH ──
   function switchSrc(m) {
     srcMode = m;
     document.getElementById('tab-csv').classList.toggle('active', m==='csv');
     document.getElementById('tab-sheets').classList.toggle('active', m==='sheets');
-    document.getElementById('dz').classList.toggle('on', m==='csv');
+    
+    document.getElementById('dz').classList.add('on');
     document.getElementById('fchip').classList.remove('on');
     document.getElementById('sheetsP').classList.toggle('on', m==='sheets');
+    
+    if (m === 'csv' || m === 'sheets') {
+        rmFile();
+    }
+    
+    if (m==='sheets') {
+         document.getElementById('fi').accept = ".xlsx,.csv";
+    } else {
+         document.getElementById('fi').accept = ".csv,.xlsx";
+    }
+    
     if (m==='csv') {
       document.getElementById('chSched').style.display = 'none';
       document.getElementById('schedP').classList.remove('on');
@@ -1005,13 +1018,25 @@
   }
 
   // ── FILE ──
+  function pickSheetFile(fInput) {
+    const f = fInput.files[0];
+    if (f) {
+        document.getElementById('fi_sheet_name').textContent = f.name;
+        droppedFile = f;
+        hasFile = true;
+        loadFile(f);
+    }
+  }
+
   function pickFile(e) { const f = e.target.files[0]; if(f) loadFile(f); }
   function loadFile(f) {
     hasFile = true;
+    droppedFile = f;
     document.getElementById('dz').classList.remove('on');
     document.getElementById('fchip').classList.add('on');
     document.getElementById('fname').textContent = f.name;
-    document.getElementById('fmeta').textContent = fmtB(f.size) + ' · CSV · ' + new Date().toLocaleDateString();
+    const type = f.name.endsWith('.xlsx') ? 'XLSX' : 'CSV';
+    document.getElementById('fmeta').textContent = fmtB(f.size) + ' · ' + type + ' · ' + new Date().toLocaleDateString();
     updChips(); updPrev();
   }
   function rmFile() {
@@ -1019,6 +1044,8 @@
     document.getElementById('fchip').classList.remove('on');
     document.getElementById('dz').classList.add('on');
     document.getElementById('fi').value = '';
+    if (document.getElementById('fi_sheet')) document.getElementById('fi_sheet').value = '';
+    if (document.getElementById('fi_sheet_name')) document.getElementById('fi_sheet_name').textContent = 'No file selected';
     updChips(); updPrev();
   }
   function fmtB(b) {
@@ -1031,7 +1058,13 @@
   function dzDrop(e) {
     e.preventDefault(); document.getElementById('dz').classList.remove('drag');
     const f = e.dataTransfer.files[0];
-    if(f && f.name.endsWith('.csv')) loadFile(f);
+    if (f) {
+        if (f.name.endsWith('.csv') || f.name.endsWith('.xlsx')) {
+            loadFile(f);
+        } else {
+            alert("Supported file types are .csv and .xlsx");
+        }
+    }
   }
 
   // ── SCHEDULER ──
@@ -1175,90 +1208,68 @@
     const aid = document.getElementById('aid').value.trim();
     const token = document.getElementById('accessToken').value.trim();
     if(!pid || !token) return;
-    if(srcMode === 'csv' && !hasFile) return;
+    
+    if(srcMode === 'csv' && !hasFile) {
+        alert("Please select a file to upload.");
+        return;
+    }
+    if(srcMode === 'sheets' && !hasFile && !document.getElementById('shUrl').value.trim()) {
+        alert("Please provide a file or a Google Sheet URL.");
+        return;
+    }
 
-    const file = document.getElementById('fi').files[0];
-    const reader = new FileReader();
-    reader.onload = async function(e) {
-      const text = e.target.result;
-      const lines = text.split(/\r?\n/).filter(l => l.trim());
-      // Strip out all spaces, dashes, parentheses to create a dense string for fuzzy mapping
-      const headers = lines[0].toLowerCase().replace(/[^a-z0-9,]/g, '').split(',');
-      
-      const colMap = {
-          email: headers.findIndex(h => h.includes('email') || h.includes('mail')),
-          phone: headers.findIndex(h => h.includes('phone') || h.includes('mobile') || h.includes('cell') || h.includes('tel')),
-          first_name: headers.findIndex(h => h.includes('first') || h.includes('given') || h.includes('fname')),
-          last_name: headers.findIndex(h => h.includes('last') || h.includes('family') || h.includes('lname') || h.includes('surname')),
-          zip_code: headers.findIndex(h => h.includes('zip') || h.includes('postal') || h.includes('postcode')),
-          country: headers.findIndex(h => h.includes('country') || h.includes('region') || h.includes('nation')),
-      };
+    const btn = document.getElementById('pushBtn');
+    btn.disabled = true; btn.textContent = '⏳ Uploading to Backend...';
+    const pDiv = document.getElementById('progDiv');
+    const fill = document.getElementById('progFill');
+    const lbl  = document.getElementById('progLbl');
+    pDiv.classList.add('on');
+    
+    fill.style.width = '30%';
+    lbl.textContent  = 'Uploading to parsing backend...';
 
-      const members = [];
-      for (let i=1; i < lines.length; i++) { // skip header
-          const cols = lines[i].split(',').map(c => c.trim());
-          const member = {};
-          
-          if (colMap.email !== -1 && cols[colMap.email]) member.email = cols[colMap.email];
-          if (colMap.phone !== -1 && cols[colMap.phone]) member.phone = cols[colMap.phone];
-          if (colMap.first_name !== -1 && cols[colMap.first_name]) member.first_name = cols[colMap.first_name];
-          if (colMap.last_name !== -1 && cols[colMap.last_name]) member.last_name = cols[colMap.last_name];
-          if (colMap.zip_code !== -1 && cols[colMap.zip_code]) member.zip_code = cols[colMap.zip_code];
-          if (colMap.country !== -1 && cols[colMap.country]) member.country = cols[colMap.country];
-          
-          // Fallback if no header matched, we just assume column 0 is email
-          if (!member.email && colMap.email === -1 && cols[0]) {
-              member.email = cols[0];
-          }
-          
-          if (member.email) {
-              members.push(member);
-          }
-      }
+    const alid = document.getElementById('alid').value.trim();
 
-      const btn = document.getElementById('pushBtn');
-      btn.disabled = true; btn.textContent = '⏳ Uploading to Backend...';
-      const pDiv = document.getElementById('progDiv');
-      const fill = document.getElementById('progFill');
-      const lbl  = document.getElementById('progLbl');
-      pDiv.classList.add('on');
-      
-      fill.style.width = '30%';
-      lbl.textContent  = 'Sending data to local FastAPI server...';
+    try {
+        const formData = new FormData();
+        formData.append('access_token', token);
+        if (pid) formData.append('partner_id', pid);
+        if (aid) formData.append('advertiser_id', aid);
+        formData.append('user_list_id', alid);
 
-      const alid = document.getElementById('alid').value.trim() || String(Math.floor(Math.random()*9e9+1e9));
+        const shUrl = document.getElementById('shUrl') ? document.getElementById('shUrl').value.trim() : '';
+        const file = droppedFile || document.getElementById('fi').files[0] || (document.getElementById('fi_sheet') ? document.getElementById('fi_sheet').files[0] : null);
 
-      try {
-        const payload = {
-            access_token: token,
-            partner_id: pid || null,
-            advertiser_id: aid || null,
-            user_list_id: alid,
-            member_list: members
-        };
+        if (file) {
+            formData.append('file', file);
+        } else if (srcMode === 'sheets' && shUrl) {
+            formData.append('google_sheet_url', shUrl);
+        } else {
+            throw new Error("No data source provided.");
+        }
 
-        const res = await fetch('http://127.0.0.1:8000/upload-audience', {
+        const res = await fetch('http://127.0.0.1:8000/upload-audience-file', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(payload)
+            body: formData
         });
         const data = await res.json();
         
         if (!res.ok) {
             throw new Error(data.detail || 'Upload failed');
         }
-
+        
         fill.style.width = '100%';
-        lbl.textContent  = 'Upload complete ✓';
-        showOK(data.request_id || alid, members.length);
-      } catch (err) {
-        alert("API Error: " + err.message);
-        btn.disabled = false; btn.textContent = '⬆️ Push to DV360';
+        lbl.textContent = 'Success - Data Ingested!';
+        showOK(data.request_id, data.message || 'Parsed from backend');
+    } catch(err) {
         fill.style.width = '0%';
-        pDiv.classList.remove('on');
-      }
-    };
-    if (file) reader.readAsText(file);
+        lbl.textContent = '❌ Push failed';
+        alert(err.message || 'Push failed. Please try again.');
+    } finally {
+        btn.disabled = false; btn.textContent = '⬆️ Push to DV360';
+        setTimeout(() => { if (!hasFile) pDiv.classList.remove('on'); }, 3000);
+    }
+
   }
 
   function showOK(reqId, count) {
