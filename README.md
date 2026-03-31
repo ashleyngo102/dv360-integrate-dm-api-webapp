@@ -30,9 +30,10 @@ python3 -m uvicorn main:app --reload --port 8000
 *(The server will run on `http://localhost:8000/`)*
 
 ### 2. Launch the Web Frontend
-Open the raw display directly in your browser:
+Navigating to the served root address will load the interactive elements instead of file-caching!
+Open your web browser directly to:
 ```bash
-open dv360_audience_manager.html
+http://localhost:8000/
 ```
 
 ## How to Test
