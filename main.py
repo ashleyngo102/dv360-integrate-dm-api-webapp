@@ -1,3 +1,4 @@
+import os
 import hashlib
 import re
 import requests
@@ -95,15 +96,23 @@ def parse_xlsx_manual(file_bytes: bytes) -> List[dict]:
         print(f"Error parsing XLSX: {traceback.format_exc()}")
         return []
 
-def download_sheet_as_csv(url: str) -> Optional[bytes]:
+def download_sheet_as_csv(url: str, token: str) -> Optional[bytes]:
     match = re.search(r'/spreadsheets/d/([a-zA-Z0-9-_]+)', url)
     if not match:
         return None
+
     spreadsheet_id = match.group(1)
     export_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/export?format=csv"
-    response = requests.get(export_url)
+    headers = {
+        "Authorization": f"Bearer {token}"
+    }
+
+    response = requests.get(export_url, headers=headers)
+
     if response.status_code == 200:
         return response.content
+
+    print(f"Sheet download failed: {response.status_code} - {response.text}")
     return None
 
 app = FastAPI(title="DV360 Data Manager Pass-Through (Stateless)")
@@ -111,7 +120,7 @@ app = FastAPI(title="DV360 Data Manager Pass-Through (Stateless)")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -120,9 +129,13 @@ from fastapi.responses import HTMLResponse
 
 @app.get("/", response_class=HTMLResponse)
 async def get_ui():
-    with open('/Users/ashleyngo/Downloads/repo/dm-api-test/integrate-dm-api/dv360_audience_manager.html', 'r') as f:
-        html_content = f.read()
-    return HTMLResponse(content=html_content)
+    html_path = os.path.join(os.getcwd(), 'dv360_audience_manager.html')
+    try:
+        with open(html_path, 'r') as f:
+            html_content = f.read()
+        return HTMLResponse(content=html_content)
+    except FileNotFoundError:
+        return HTMLResponse(content="<h1>HTML File Not Found</h1>", status_code=404)
 
 class Member(BaseModel):
     email: str
@@ -276,7 +289,7 @@ async def upload_audience_file(
         records = []
         
         if google_sheet_url:
-            file_bytes = download_sheet_as_csv(google_sheet_url)
+            file_bytes = download_sheet_as_csv(google_sheet_url, access_token)
             if not file_bytes:
                 raise HTTPException(status_code=400, detail="Could not download Google Sheet. Ensure it is visible to 'Anyone with the link can view'.")
             text = file_bytes.decode('utf-8')
