@@ -6,10 +6,12 @@ import zipfile
 import io
 import xml.etree.ElementTree as ET
 import csv
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
+from auth_utils import get_access_token
+from urllib.parse import urlencode
 
 def clean_header_fuzzy(h: str) -> str:
     return re.sub(r'[^a-z0-9]', '', str(h).lower())
@@ -127,6 +129,108 @@ app.add_middleware(
 
 from fastapi.responses import HTMLResponse
 
+def resolve_token(token: str) -> str:
+    """If token is 'auto' or empty, try to get it from auth_utils."""
+    if not token or token.lower() == "auto":
+        automated_token = get_access_token()
+        if isinstance(automated_token, dict): # Error case
+            raise HTTPException(status_code=401, detail=f"Automated token refresh failed: {automated_token.get('details')}")
+        return automated_token
+    return token
+
+@app.get("/auth/url")
+async def get_auth_url(request: Request):
+    """Generates the Google OAuth URL for the frontend."""
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    if not client_id:
+        raise HTTPException(status_code=500, detail="GOOGLE_CLIENT_ID not set in .env")
+    
+    # Use REDIRECT_URI from .env if available, otherwise fallback to request base_url
+    redirect_uri = os.getenv("REDIRECT_URI")
+    if not redirect_uri:
+        base_url = str(request.base_url).rstrip("/")
+        redirect_uri = f"{base_url}/auth/callback"
+    
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": "https://www.googleapis.com/auth/datamanager",
+        "response_type": "code",
+        "access_type": "offline",
+        "prompt": "consent"
+    }
+    return {"url": f"https://accounts.google.com/o/oauth2/auth?{urlencode(params)}"}
+
+@app.get("/auth/status")
+async def get_auth_status():
+    """Checks if the application is configured with valid OAuth credentials."""
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+    refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN")
+
+    if not all([client_id, client_secret, refresh_token]):
+        return {
+            "status": "missing_config",
+            "details": "One or more OAuth credentials (Client ID, Secret, Refresh Token) are missing from .env"
+        }
+
+    # Attempt a dry-run refresh
+    token_res = get_access_token()
+    if isinstance(token_res, dict) and "error" in token_res:
+        return {
+            "status": "unauthorized",
+            "details": token_res.get("details", "Failed to refresh token")
+        }
+    
+    return {
+        "status": "authenticated",
+        "message": "Application is successfully authenticated with Google."
+    }
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request, code: str):
+    """Handles the redirect from Google and saves the refresh token."""
+    client_id = os.getenv("GOOGLE_CLIENT_ID")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+    
+    # Use REDIRECT_URI from .env if available, otherwise fallback to request base_url
+    redirect_uri = os.getenv("REDIRECT_URI")
+    if not redirect_uri:
+        base_url = str(request.base_url).rstrip("/")
+        redirect_uri = f"{base_url}/auth/callback"
+    
+    token_url = "https://oauth2.googleapis.com/token"
+    data = {
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code"
+    }
+    
+    res = requests.post(token_url, data=data)
+    if res.status_code != 200:
+        return HTMLResponse(content=f"<h1>Auth Failed</h1><pre>{res.text}</pre>")
+    
+    tokens = res.json()
+    refresh_token = tokens.get("refresh_token")
+    
+    if refresh_token:
+        # Update the .env file automatically
+        with open(".env", "r") as f:
+            lines = f.readlines()
+        
+        with open(".env", "w") as f:
+            for line in lines:
+                if line.startswith("GOOGLE_REFRESH_TOKEN="):
+                    f.write(f"GOOGLE_REFRESH_TOKEN={refresh_token}\n")
+                else:
+                    f.write(line)
+        
+        return HTMLResponse(content="<h1>Authentication Successful!</h1><p>The refresh token has been saved. You can close this tab and return to the app.</p>")
+    
+    return HTMLResponse(content="<h1>Warning</h1><p>Auth worked, but no refresh token was returned. (You might have already authorized recently). Try again or check your .env.</p>")
+
 @app.get("/", response_class=HTMLResponse)
 async def get_ui():
     html_path = os.path.join(os.getcwd(), 'dv360_audience_manager.html')
@@ -147,7 +251,7 @@ class Member(BaseModel):
     match_id: Optional[str] = None
 
 class AudienceUpload(BaseModel):
-    access_token: str
+    access_token: Optional[str] = "auto"
     partner_id: Optional[str] = None
     advertiser_id: Optional[str] = None
     user_list_id: str
@@ -241,7 +345,8 @@ async def root():
 
 @app.post("/upload-audience")
 async def upload_audience(request: AudienceUpload):
-    res = prepare_payload_and_ingest(request.member_list, request.access_token, request.user_list_id, request.partner_id, request.advertiser_id)
+    token = resolve_token(request.access_token)
+    res = prepare_payload_and_ingest(request.member_list, token, request.user_list_id, request.partner_id, request.advertiser_id)
     return {
         "status": "success", 
         "request_id": res.get("requestId"),
@@ -252,12 +357,13 @@ async def upload_audience(request: AudienceUpload):
 async def upload_audience_file(
     file: Optional[UploadFile] = File(None),
     google_sheet_url: Optional[str] = Form(None),
-    access_token: str = Form(...),
+    access_token: str = Form("auto"),
     partner_id: Optional[str] = Form(None),
     advertiser_id: Optional[str] = Form(None),
     user_list_id: Optional[str] = Form(None)
 ):
     try:
+        access_token = resolve_token(access_token)
         if not user_list_id or user_list_id.strip() == "":
             if not advertiser_id:
                  raise HTTPException(status_code=400, detail="Cannot create UserList without advertiser_id. Please provide either user_list_id or advertiser_id.")

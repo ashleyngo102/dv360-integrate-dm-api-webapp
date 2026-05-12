@@ -835,8 +835,12 @@
     <div class="card-body">
       <div class="ff" style="margin-bottom:18px">
         <label class="fl">Google OAuth Access Token <span class="req">*</span></label>
-        <input type="text" class="fi mono" id="accessToken" placeholder="Enter your Google Access Token here" oninput="updPrev()">
-        <div class="fh">Paste your valid OAuth 2.0 Access Token here (e.g. from Google OAuth Playground)</div>
+        <div style="display:flex; align-items:center; gap:10px;">
+          <input type="text" class="fi mono" id="accessToken" value="auto" placeholder="Enter 'auto' to use automated refresh or paste token" oninput="updPrev()" style="flex:1">
+          <button class="btn btn-outline" id="authBtn" onclick="doAuthorize()" style="white-space:nowrap; padding: 0 15px;">🔑 Authorize</button>
+          <div id="authStatus" style="font-size: 11px; font-weight: 700; display: none; padding: 4px 8px; border-radius: 4px;"></div>
+        </div>
+        <div class="fh">Type <b>'auto'</b> to use the automated Refresh Token flow (configured in .env), or click <b>Authorize</b> to sign in.</div>
       </div>
       <div class="grid2" style="margin-bottom:18px">
         <div class="ff">
@@ -989,16 +993,50 @@
 <script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
   let srcMode = 'csv', hasFile = false, apiOpen = false, droppedFile = null;
 
+  window.onload = () => {
+    checkAuthStatus();
+  };
+
+  async function checkAuthStatus() {
+    const statusEl = document.getElementById('authStatus');
+    const authBtn = document.getElementById('authBtn');
+    try {
+      const res = await fetch('/auth/status');
+      const data = await res.json();
+      
+      statusEl.style.display = 'inline-block';
+      if (data.status === 'authenticated') {
+        statusEl.textContent = 'CONNECTED';
+        statusEl.style.background = '#e6f4ea';
+        statusEl.style.color = '#1e8e3e';
+        statusEl.style.border = '1px solid #b7dfbf';
+        authBtn.textContent = '🔄 Re-authorize';
+      } else if (data.status === 'unauthorized') {
+        statusEl.textContent = 'AUTH EXPIRED';
+        statusEl.style.background = '#fce8e6';
+        statusEl.style.color = '#d93025';
+        statusEl.style.border = '1px solid #f9bbbb';
+      } else {
+        statusEl.textContent = 'NOT CONFIGURED';
+        statusEl.style.background = '#fef7e0';
+        statusEl.style.color = '#b05e00';
+        statusEl.style.border = '1px solid #ffe082';
+      }
+    } catch (e) {
+      console.error("Auth status check failed", e);
+    }
+  }
+
   // ── SOURCE SWITCH ──
   function switchSrc(m) {
     srcMode = m;
     document.getElementById('tab-csv').classList.toggle('active', m==='csv');
     document.getElementById('tab-sheets').classList.toggle('active', m==='sheets');
-    
+
     document.getElementById('dz').classList.add('on');
     document.getElementById('fchip').classList.remove('on');
     document.getElementById('sheetsP').classList.toggle('on', m==='sheets');
-    
+
     if (m === 'csv' || m === 'sheets') {
         rmFile();
     }
@@ -1015,6 +1053,20 @@
       document.getElementById('schedTog').checked = false;
     }
     updChips(); updPrev();
+  }
+
+  async function doAuthorize() {
+    try {
+      const res = await fetch('/auth/url');
+      const data = await res.json();
+      if (data.url) {
+        window.open(data.url, '_blank');
+      } else {
+        alert("Error: " + (data.detail || "Could not get auth URL"));
+      }
+    } catch (e) {
+      alert("Failed to connect to backend: " + e.message);
+    }
   }
 
   // ── FILE ──

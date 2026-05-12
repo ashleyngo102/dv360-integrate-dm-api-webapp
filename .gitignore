@@ -1,5 +1,5 @@
+.env
+.venv/
 __pycache__/
+*.pyc
 .DS_Store
-test_payload.py
-http.log
-uvicorn.log
